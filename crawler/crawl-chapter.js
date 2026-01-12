@@ -233,18 +233,51 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         return [];
     }
     
-    console.log(`☁️ Found ${imgElements.length} images. Downloading via FlareSolverr proxy...`);
+    console.log(`☁️ Found ${imgElements.length} images. Downloading with FlareSolverr cookies...`);
     
     const folderPath = `/manga_verse/${mangaId}/${chapterId}`;
     
-    // Prepare headers with FlareSolverr cookies for axios fallback
+    // Check if images are from a different domain (CDN)
+    let firstImgUrl = imgElements[0];
+    if (firstImgUrl.startsWith('//')) firstImgUrl = 'https:' + firstImgUrl;
+    
+    let imgCookies = result.cookies;
+    let imgUserAgent = result.userAgent;
+    
+    // If image domain is different, get cookies for that domain too
+    try {
+        const imgDomain = new URL(firstImgUrl).origin;
+        const pageDomain = new URL(chapterUrl).origin;
+        
+        if (imgDomain !== pageDomain) {
+            console.log(`🔄 Image CDN detected: ${imgDomain}`);
+            console.log(`🔓 Getting cookies for CDN domain...`);
+            
+            // Request first image via FlareSolverr to get CDN cookies
+            const cdnResult = await solveWithFlaresolverr(firstImgUrl);
+            if (cdnResult && cdnResult.cookies.length > 0) {
+                // Merge cookies: CDN cookies take priority
+                const cookieMap = {};
+                result.cookies.forEach(c => cookieMap[c.name] = c);
+                cdnResult.cookies.forEach(c => cookieMap[c.name] = c);
+                imgCookies = Object.values(cookieMap);
+                imgUserAgent = cdnResult.userAgent || imgUserAgent;
+                console.log(`✅ Got ${imgCookies.length} cookies for image download`);
+            }
+        }
+    } catch (e) {
+        console.log(`⚠️ Could not get CDN cookies: ${e.message}`);
+    }
+    
+    // Prepare headers with cookies
     const axiosHeaders = {
-        'User-Agent': result.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': imgUserAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
         'Referer': chapterUrl,
-        'Origin': new URL(chapterUrl).origin,
         'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130"',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
         'Sec-Ch-Ua-Mobile': '?0',
         'Sec-Ch-Ua-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'image',
@@ -252,11 +285,12 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         'Sec-Fetch-Site': 'cross-site'
     };
     
-    if (result.cookies.length > 0) {
-        axiosHeaders['Cookie'] = result.cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    if (imgCookies.length > 0) {
+        axiosHeaders['Cookie'] = imgCookies.map(c => `${c.name}=${c.value}`).join('; ');
+        console.log(`🍪 Using ${imgCookies.length} cookies for image download`);
     }
     
-    // Download and upload (try axios first, then FlareSolverr proxy)
+    // Download and upload
     async function downloadAndUpload(src, idx) {
         try {
             // Ensure absolute URL
@@ -264,55 +298,21 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
             if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
             if (!imgUrl.startsWith('http')) return null;
             
-            let imageBuffer = null;
+            // Download with axios
+            const response = await axios.get(imgUrl, {
+                responseType: 'arraybuffer',
+                headers: axiosHeaders,
+                timeout: 30000,
+                maxRedirects: 5
+            });
             
-            // Try axios first (faster)
-            try {
-                const response = await axios.get(imgUrl, {
-                    responseType: 'arraybuffer',
-                    headers: axiosHeaders,
-                    timeout: 15000
-                });
-                
-                if (response.data && response.data.byteLength > 1000) {
-                    imageBuffer = Buffer.from(response.data);
-                }
-            } catch (axiosError) {
-                // Axios failed (403), try FlareSolverr proxy
-                console.log(`  🔄 Image ${idx}: axios failed, trying FlareSolverr proxy...`);
-                
-                const proxyResponse = await axios.post(FLARESOLVERR_URL, {
-                    cmd: 'request.get',
-                    url: imgUrl,
-                    maxTimeout: 45000
-                }, {
-                    headers: { 'Content-Type': 'application/json' },
-                    timeout: 50000
-                });
-                
-                if (proxyResponse.data.status === 'ok' && proxyResponse.data.solution) {
-                    // FlareSolverr returns HTML/text response, need to extract image
-                    // For CDN images, the response might contain the raw data
-                    const sol = proxyResponse.data.solution;
-                    
-                    // Check if response is a data URL or base64
-                    if (sol.response && sol.response.startsWith('data:image')) {
-                        const base64Data = sol.response.split(',')[1];
-                        imageBuffer = Buffer.from(base64Data, 'base64');
-                    } else if (sol.response) {
-                        // Try to use the response as-is (might be binary)
-                        imageBuffer = Buffer.from(sol.response, 'binary');
-                    }
-                }
-            }
-            
-            if (!imageBuffer || imageBuffer.length < 1000) {
-                console.error(`  ❌ Image ${idx}: No valid data`);
+            if (!response.data || response.data.byteLength < 1000) {
+                console.error(`  ❌ Image ${idx}: Too small or empty`);
                 return null;
             }
             
             // Upload to ImageKit
-            const base64Image = imageBuffer.toString('base64');
+            const base64Image = Buffer.from(response.data).toString('base64');
             const filename = `${String(idx).padStart(3, '0')}.jpg`;
             
             const uploadResult = await imagekit.upload({
@@ -329,12 +329,10 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         }
     }
     
-    // Process sequentially (FlareSolverr has rate limits)
+    // Process in batches of 4 (balance speed vs rate limits)
     const urls = new Array(imgElements.length).fill(null);
     let completed = 0;
-    
-    // Process in small batches of 2 (FlareSolverr is slow)
-    const BATCH_SIZE = 2;
+    const BATCH_SIZE = 4;
     
     for (let i = 0; i < imgElements.length; i += BATCH_SIZE) {
         const batch = imgElements.slice(i, Math.min(i + BATCH_SIZE, imgElements.length));
