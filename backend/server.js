@@ -67,7 +67,7 @@ const path = require('path');
 app.get('/api/mangas/:mangaId/:chapterId', async (req, res) => {
   try {
     const { mangaId, chapterId } = req.params;
-    let detail = await ChapterDetail.findOne({ mangaId, chapterId });
+    let detail = await ChapterDetail.findOne({ manga_id: mangaId, chapter_id: chapterId });
     
     // Lazy Crawl if missing
     if (!detail) {
@@ -84,7 +84,7 @@ app.get('/api/mangas/:mangaId/:chapterId', async (req, res) => {
         });
 
         // Re-fetch after crawl
-        detail = await ChapterDetail.findOne({ mangaId, chapterId });
+        detail = await ChapterDetail.findOne({ manga_id: mangaId, chapter_id: chapterId });
     }
 
     if (!detail) {

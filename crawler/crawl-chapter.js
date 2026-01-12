@@ -1,5 +1,5 @@
-require('dotenv').config({ path: '../backend/.env' });
-const mongoose = require('../backend/node_modules/mongoose');
+require('dotenv').config({ path: __dirname + '/.env' });
+const mongoose = require('mongoose');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const Manga = require('../backend/models/Manga');
