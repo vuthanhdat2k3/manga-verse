@@ -11,12 +11,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Database Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/manga-verse')
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
-
-// Routes
+// Routes (defined before connection so they're ready when server starts)
 
 // 1. Get All Mangas (with pagination and search)
 app.get('/api/mangas', async (req, res) => {
@@ -129,6 +124,22 @@ app.get('/api/mangas/:mangaId/:chapterId', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Database Connection & Server Start
+(async () => {
+  try {
+    // Connect to MongoDB FIRST
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/manga-verse', {
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+    });
+    console.log('✅ MongoDB connected');
+    
+    // THEN start server
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err);
+    process.exit(1);
+  }
+})();

@@ -1,5 +1,8 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../backend/.env') });
-const mongoose = require('mongoose');
+
+// ⚠️ CRITICAL: Must use the SAME mongoose instance as the models
+// Models in ../backend/models/ require mongoose from ../backend/node_modules
+const mongoose = require('../backend/node_modules/mongoose');
 
 // ⚠️ CRITICAL: Disable buffering BEFORE requiring models
 // Models inherit this config when they are created
@@ -32,31 +35,44 @@ let flareSolverrUserAgent = '';
 
 async function connectDB() {
     try {
-        // If already connected, skip
+        // If already connected, verify it's stable
         if (mongoose.connection.readyState === 1) {
+            // Wait a tiny bit to ensure stable
+            await new Promise(resolve => setTimeout(resolve, 100));
             console.log("✅ DB Already Connected");
             return;
         }
 
+        // Connect with fail-fast config
         await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/manga-verse', {
-            serverSelectionTimeoutMS: 30000, // 30 seconds timeout for initial connection
-            socketTimeoutMS: 45000,          // 45 seconds socket timeout
-            bufferCommands: false,           // Disable buffering - fail fast instead of timeout
+            serverSelectionTimeoutMS: 30000,
+            socketTimeoutMS: 45000,
+            bufferCommands: false,
         });
 
-        // Wait for connection to be fully ready
+        // ALWAYS wait for 'connected' event to be sure
         if (mongoose.connection.readyState !== 1) {
+            console.log('⏳ Waiting for connection to stabilize...');
             await new Promise((resolve, reject) => {
-                mongoose.connection.once('connected', resolve);
-                mongoose.connection.once('error', reject);
-                setTimeout(() => reject(new Error('Connection timeout')), 30000);
+                const timeout = setTimeout(() => reject(new Error('Connection stabilization timeout')), 30000);
+                mongoose.connection.once('connected', () => {
+                    clearTimeout(timeout);
+                    resolve();
+                });
+                mongoose.connection.once('error', (err) => {
+                    clearTimeout(timeout);
+                    reject(err);
+                });
             });
         }
+
+        // Extra wait to ensure connection is truly stable
+        await new Promise(resolve => setTimeout(resolve, 500));
 
         console.log("✅ DB Connected");
     } catch (error) {
         console.error("❌ DB Connection Error:", error.message);
-        process.exit(1); // Exit immediately on connection failure
+        process.exit(1);
     }
 }
 

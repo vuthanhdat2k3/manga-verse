@@ -6,6 +6,9 @@ const chapterDetailSchema = new mongoose.Schema({
   images: [String], // Array of ImageKit URLs
   updated_at: { type: Date, default: Date.now },
   created_at: { type: Date, default: Date.now }
+}, {
+  bufferCommands: false,  // Disable buffering for production reliability
+  bufferTimeoutMS: 30000
 });
 
 // Compound index for faster lookups

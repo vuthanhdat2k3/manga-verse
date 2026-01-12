@@ -18,6 +18,9 @@ const mangaSchema = new mongoose.Schema({
   chapters: [chapterSchema], 
   updated_at: { type: Date, default: Date.now },
   created_at: { type: Date, default: Date.now }
+}, {
+  bufferCommands: false,  // Disable buffering for production reliability
+  bufferTimeoutMS: 30000
 });
 
 // Text index for search
