@@ -233,64 +233,24 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         return [];
     }
     
-    console.log(`☁️ Found ${imgElements.length} images. Downloading with FlareSolverr cookies...`);
+    console.log(`☁️ Found ${imgElements.length} images. Downloading...`);
     
     const folderPath = `/manga_verse/${mangaId}/${chapterId}`;
     
-    // Check if images are from a different domain (CDN)
-    let firstImgUrl = imgElements[0];
-    if (firstImgUrl.startsWith('//')) firstImgUrl = 'https:' + firstImgUrl;
+    // Get the page domain for Referer
+    const pageDomain = new URL(chapterUrl).origin;
     
-    let imgCookies = result.cookies;
-    let imgUserAgent = result.userAgent;
-    
-    // If image domain is different, get cookies for that domain too
-    try {
-        const imgDomain = new URL(firstImgUrl).origin;
-        const pageDomain = new URL(chapterUrl).origin;
-        
-        if (imgDomain !== pageDomain) {
-            console.log(`🔄 Image CDN detected: ${imgDomain}`);
-            console.log(`🔓 Getting cookies for CDN domain...`);
-            
-            // Request first image via FlareSolverr to get CDN cookies
-            const cdnResult = await solveWithFlaresolverr(firstImgUrl);
-            if (cdnResult && cdnResult.cookies.length > 0) {
-                // Merge cookies: CDN cookies take priority
-                const cookieMap = {};
-                result.cookies.forEach(c => cookieMap[c.name] = c);
-                cdnResult.cookies.forEach(c => cookieMap[c.name] = c);
-                imgCookies = Object.values(cookieMap);
-                imgUserAgent = cdnResult.userAgent || imgUserAgent;
-                console.log(`✅ Got ${imgCookies.length} cookies for image download`);
-            }
-        }
-    } catch (e) {
-        console.log(`⚠️ Could not get CDN cookies: ${e.message}`);
-    }
-    
-    // Prepare headers with cookies
-    const axiosHeaders = {
-        'User-Agent': imgUserAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'Referer': chapterUrl,
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+    // Simple headers that mimic a real browser image request
+    // CDN anti-hotlink usually only checks Referer
+    const baseHeaders = {
+        'User-Agent': result.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'image',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'cross-site'
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
     };
     
-    if (imgCookies.length > 0) {
-        axiosHeaders['Cookie'] = imgCookies.map(c => `${c.name}=${c.value}`).join('; ');
-        console.log(`🍪 Using ${imgCookies.length} cookies for image download`);
-    }
-    
-    // Download and upload
+    // Download and upload with retry logic for different Referer patterns
     async function downloadAndUpload(src, idx) {
         try {
             // Ensure absolute URL
@@ -298,16 +258,51 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
             if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
             if (!imgUrl.startsWith('http')) return null;
             
-            // Download with axios
-            const response = await axios.get(imgUrl, {
-                responseType: 'arraybuffer',
-                headers: axiosHeaders,
-                timeout: 30000,
-                maxRedirects: 5
-            });
+            // Try different Referer patterns
+            const referersToTry = [
+                chapterUrl,                    // Full chapter URL
+                pageDomain + '/',              // Just domain with /
+                pageDomain,                    // Just domain
+                BASE_URL + '/',                // Base URL with /
+                ''                             // No referer
+            ];
             
-            if (!response.data || response.data.byteLength < 1000) {
-                console.error(`  ❌ Image ${idx}: Too small or empty`);
+            let response = null;
+            let lastError = null;
+            
+            for (const referer of referersToTry) {
+                try {
+                    const headers = { ...baseHeaders };
+                    if (referer) {
+                        headers['Referer'] = referer;
+                    }
+                    
+                    response = await axios.get(imgUrl, {
+                        responseType: 'arraybuffer',
+                        headers,
+                        timeout: 30000,
+                        maxRedirects: 5,
+                        validateStatus: (status) => status < 500 // Accept 4xx to check ourselves
+                    });
+                    
+                    if (response.status === 200 && response.data && response.data.byteLength > 1000) {
+                        break; // Success!
+                    } else if (response.status === 403) {
+                        lastError = `403 with Referer: ${referer || '(none)'}`;
+                        response = null;
+                        continue; // Try next referer
+                    } else {
+                        lastError = `Status ${response.status}`;
+                        response = null;
+                    }
+                } catch (e) {
+                    lastError = e.message;
+                    response = null;
+                }
+            }
+            
+            if (!response || !response.data || response.data.byteLength < 1000) {
+                console.error(`  ❌ Image ${idx}: ${lastError || 'No valid data'}`);
                 return null;
             }
             
@@ -329,7 +324,7 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         }
     }
     
-    // Process in batches of 4 (balance speed vs rate limits)
+    // Process in batches of 4
     const urls = new Array(imgElements.length).fill(null);
     let completed = 0;
     const BATCH_SIZE = 4;
