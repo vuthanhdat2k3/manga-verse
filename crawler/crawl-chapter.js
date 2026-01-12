@@ -1,5 +1,11 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../backend/.env') });
 const mongoose = require('mongoose');
+
+// ⚠️ CRITICAL: Disable buffering BEFORE requiring models
+// Models inherit this config when they are created
+mongoose.set('bufferCommands', false);
+mongoose.set('bufferTimeoutMS', 30000);
+
 const axios = require('axios');
 const cheerio = require('cheerio');
 const Manga = require('../backend/models/Manga');
