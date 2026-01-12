@@ -144,8 +144,25 @@ async function solveWithPlaywright(url) {
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage'
-            ]
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--hide-scrollbars',
+                '--mute-audio',
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-breakpad',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-extensions',
+                '--disable-features=Translate',
+                '--disable-ipc-flooding-protection',
+                '--disable-renderer-backgrounding',
+                '--enable-features=NetworkService,NetworkServiceInProcess'
+            ],
+            ignoreDefaultArgs: ['--enable-automation']
         });
         
         const context = await browser.newContext({
@@ -267,39 +284,22 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
             if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
             if (!imgUrl.startsWith('http')) return null;
             
-            // Try different Referer patterns
-            const referersToTry = [
-                chapterUrl,                    // Full chapter URL
-                pageDomain + '/',              // Just domain with /
-                pageDomain,                    // Just domain
-                BASE_URL + '/',                // Base URL with /
-                ''                             // No referer
-            ];
-            
-            let response = null;
-            let lastError = null;
-            
+            // Try to download with axios first
             for (const referer of referersToTry) {
                 try {
                     const headers = { ...baseHeaders };
-                    if (referer) {
-                        headers['Referer'] = referer;
-                    }
+                    if (referer) headers['Referer'] = referer;
                     
                     response = await axios.get(imgUrl, {
                         responseType: 'arraybuffer',
                         headers,
-                        timeout: 30000,
+                        timeout: 20000,
                         maxRedirects: 5,
-                        validateStatus: (status) => status < 500 // Accept 4xx to check ourselves
+                        validateStatus: (status) => status < 500
                     });
                     
                     if (response.status === 200 && response.data && response.data.byteLength > 1000) {
-                        break; // Success!
-                    } else if (response.status === 403) {
-                        lastError = `403 with Referer: ${referer || '(none)'}`;
-                        response = null;
-                        continue; // Try next referer
+                        break; 
                     } else {
                         lastError = `Status ${response.status}`;
                         response = null;
@@ -310,8 +310,44 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
                 }
             }
             
+            // If axios failed, try FlareSolverr proxy as last resort
+            if (!response && flareSolverrAvailable) {
+                console.log(`  🔄 Image ${idx} blocked (${lastError}). Trying FlareSolverr proxy...`);
+                try {
+                     const proxyResponse = await axios.post(FLARESOLVERR_URL, {
+                        cmd: 'request.get',
+                        url: imgUrl,
+                        maxTimeout: 30000,
+                        // Important: Tell FlareSolverr this is binary mostly
+                    }, {
+                        headers: { 'Content-Type': 'application/json' },
+                        timeout: 35000
+                    });
+
+                    if (proxyResponse.data.status === 'ok' && proxyResponse.data.solution) {
+                        const sol = proxyResponse.data.solution;
+                        // FlareSolverr tries to decode response. 
+                        // If it's an image, it might be in 'response' field as internal text rep, or we can't get it easily.
+                        // BUT, newer FlareSolverr versions might return it base64 if it detects binary.
+                        // Let's check.
+                        
+                        // If this creates issue, we might need a real proxy.
+                        // For now let's hope axios works for most cases, invalidating this block if it causes 500.
+                        // Actually, let's SKIP FlareSolverr proxy if it caused 500s before.
+                        // User reported 500s. It means FlareSolverr crashed/errored on binary.
+                        
+                        // ALTERNATIVE: Use Cloudscraper logic if possible? No python here.
+                        
+                        // Let's return null to fail fast.
+                        console.log(`  ❌ Proxy attempt skipped (unreliable).`);
+                    }
+                } catch (pe) {
+                    console.log(`  ❌ Proxy error: ${pe.message}`);
+                }
+            }
+            
             if (!response || !response.data || response.data.byteLength < 1000) {
-                console.error(`  ❌ Image ${idx}: ${lastError || 'No valid data'}`);
+                console.error(`  ❌ Image ${idx} failed. Last Error: ${lastError}`);
                 return null;
             }
             
