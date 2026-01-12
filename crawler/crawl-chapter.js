@@ -137,13 +137,22 @@ async function solveWithPlaywright(url) {
     let browser = null;
     
     try {
-        browser = await chromium.launchPersistentContext(USER_DATA_DIR, {
+        // Use regular launch instead of launchPersistentContext for server compatibility
+        browser = await chromium.launch({
             headless: true,
-            args: ['--disable-blink-features=AutomationControlled'],
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage'
+            ]
+        });
+        
+        const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
         });
         
-        const page = await browser.newPage();
+        const page = await context.newPage();
         
         // Anti-detection
         await page.addInitScript(() => {
@@ -171,7 +180,7 @@ async function solveWithPlaywright(url) {
         
         const html = await page.content();
         
-        return { html, page, browser };
+        return { html, page, browser, context };
     } catch (error) {
         if (browser) await browser.close();
         console.error('❌ Playwright error:', error.message);
