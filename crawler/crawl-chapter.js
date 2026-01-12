@@ -1,4 +1,4 @@
-require('dotenv').config({ path: __dirname + '/.env' });
+require('dotenv').config({ path: require('path').resolve(__dirname, '../backend/.env') });
 const mongoose = require('mongoose');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -25,8 +25,33 @@ let flareSolverrCookies = [];
 let flareSolverrUserAgent = '';
 
 async function connectDB() {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/manga-verse');
-    console.log("✅ DB Connected");
+    try {
+        // If already connected, skip
+        if (mongoose.connection.readyState === 1) {
+            console.log("✅ DB Already Connected");
+            return;
+        }
+
+        await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/manga-verse', {
+            serverSelectionTimeoutMS: 30000, // 30 seconds timeout for initial connection
+            socketTimeoutMS: 45000,          // 45 seconds socket timeout
+            bufferCommands: false,           // Disable buffering - fail fast instead of timeout
+        });
+
+        // Wait for connection to be fully ready
+        if (mongoose.connection.readyState !== 1) {
+            await new Promise((resolve, reject) => {
+                mongoose.connection.once('connected', resolve);
+                mongoose.connection.once('error', reject);
+                setTimeout(() => reject(new Error('Connection timeout')), 30000);
+            });
+        }
+
+        console.log("✅ DB Connected");
+    } catch (error) {
+        console.error("❌ DB Connection Error:", error.message);
+        process.exit(1); // Exit immediately on connection failure
+    }
 }
 
 /**
