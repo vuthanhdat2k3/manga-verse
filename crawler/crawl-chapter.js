@@ -180,7 +180,37 @@ async function solveWithPlaywright(url) {
 }
 
 /**
- * Download chapter images via FlareSolverr (parallel download + upload)
+ * Download a single image via FlareSolverr proxy (bypasses CDN protection)
+ */
+async function downloadImageViaFlaresolverr(imgUrl) {
+    try {
+        const response = await axios.post(FLARESOLVERR_URL, {
+            cmd: 'request.get',
+            url: imgUrl,
+            maxTimeout: 30000,
+            returnRawHtml: true
+        }, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 35000
+        });
+
+        if (response.data.status === 'ok') {
+            const solution = response.data.solution;
+            // FlareSolverr returns the response as text, we need to check if it's base64 or raw
+            if (solution.response) {
+                // The response might be base64 encoded or raw HTML
+                // For binary content, FlareSolverr returns base64
+                return solution.response;
+            }
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Download chapter images via FlareSolverr (download each image through proxy)
  */
 async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
     const result = await solveWithFlaresolverr(chapterUrl);
@@ -203,25 +233,30 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         return [];
     }
     
-    console.log(`☁️ Found ${imgElements.length} images. Download + Upload in parallel...`);
+    console.log(`☁️ Found ${imgElements.length} images. Downloading via FlareSolverr proxy...`);
     
     const folderPath = `/manga_verse/${mangaId}/${chapterId}`;
     
-    // Prepare headers with FlareSolverr cookies
-    const headers = {
+    // Prepare headers with FlareSolverr cookies for axios fallback
+    const axiosHeaders = {
         'User-Agent': result.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': chapterUrl,
+        'Origin': new URL(chapterUrl).origin,
         'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'image',
         'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'same-origin'
+        'Sec-Fetch-Site': 'cross-site'
     };
     
     if (result.cookies.length > 0) {
-        headers['Cookie'] = result.cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        axiosHeaders['Cookie'] = result.cookies.map(c => `${c.name}=${c.value}`).join('; ');
     }
     
-    // Download and upload in parallel (combined task)
+    // Download and upload (try axios first, then FlareSolverr proxy)
     async function downloadAndUpload(src, idx) {
         try {
             // Ensure absolute URL
@@ -229,19 +264,55 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
             if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
             if (!imgUrl.startsWith('http')) return null;
             
-            // Download
-            const response = await axios.get(imgUrl, {
-                responseType: 'arraybuffer',
-                headers,
-                timeout: 30000
-            });
+            let imageBuffer = null;
             
-            if (!response.data || response.data.byteLength < 1000) {
+            // Try axios first (faster)
+            try {
+                const response = await axios.get(imgUrl, {
+                    responseType: 'arraybuffer',
+                    headers: axiosHeaders,
+                    timeout: 15000
+                });
+                
+                if (response.data && response.data.byteLength > 1000) {
+                    imageBuffer = Buffer.from(response.data);
+                }
+            } catch (axiosError) {
+                // Axios failed (403), try FlareSolverr proxy
+                console.log(`  🔄 Image ${idx}: axios failed, trying FlareSolverr proxy...`);
+                
+                const proxyResponse = await axios.post(FLARESOLVERR_URL, {
+                    cmd: 'request.get',
+                    url: imgUrl,
+                    maxTimeout: 45000
+                }, {
+                    headers: { 'Content-Type': 'application/json' },
+                    timeout: 50000
+                });
+                
+                if (proxyResponse.data.status === 'ok' && proxyResponse.data.solution) {
+                    // FlareSolverr returns HTML/text response, need to extract image
+                    // For CDN images, the response might contain the raw data
+                    const sol = proxyResponse.data.solution;
+                    
+                    // Check if response is a data URL or base64
+                    if (sol.response && sol.response.startsWith('data:image')) {
+                        const base64Data = sol.response.split(',')[1];
+                        imageBuffer = Buffer.from(base64Data, 'base64');
+                    } else if (sol.response) {
+                        // Try to use the response as-is (might be binary)
+                        imageBuffer = Buffer.from(sol.response, 'binary');
+                    }
+                }
+            }
+            
+            if (!imageBuffer || imageBuffer.length < 1000) {
+                console.error(`  ❌ Image ${idx}: No valid data`);
                 return null;
             }
             
-            // Upload immediately
-            const base64Image = Buffer.from(response.data).toString('base64');
+            // Upload to ImageKit
+            const base64Image = imageBuffer.toString('base64');
             const filename = `${String(idx).padStart(3, '0')}.jpg`;
             
             const uploadResult = await imagekit.upload({
@@ -258,10 +329,12 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
         }
     }
     
-    // Process in batches of 8
+    // Process sequentially (FlareSolverr has rate limits)
     const urls = new Array(imgElements.length).fill(null);
-    const BATCH_SIZE = 8;
     let completed = 0;
+    
+    // Process in small batches of 2 (FlareSolverr is slow)
+    const BATCH_SIZE = 2;
     
     for (let i = 0; i < imgElements.length; i += BATCH_SIZE) {
         const batch = imgElements.slice(i, Math.min(i + BATCH_SIZE, imgElements.length));
