@@ -210,8 +210,11 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
     // Prepare headers with FlareSolverr cookies
     const headers = {
         'User-Agent': result.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': BASE_URL,
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+        'Referer': chapterUrl,
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Sec-Fetch-Dest': 'image',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Site': 'same-origin'
     };
     
     if (result.cookies.length > 0) {
@@ -319,7 +322,7 @@ async function downloadChapterViaPlaywright(mangaId, chapterId, chapterUrl) {
             if (!src.startsWith('http')) continue;
             
             const response = await page.request.get(src, {
-                headers: { 'Referer': BASE_URL + '/' }
+                headers: { 'Referer': chapterUrl }
             });
             
             if (response.status() === 200) {
