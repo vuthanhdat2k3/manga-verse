@@ -278,6 +278,17 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
     
     // Download and upload with retry logic for different Referer patterns
     async function downloadAndUpload(src, idx) {
+        // Define referers to try - different patterns that may bypass hotlink protection
+        const referersToTry = [
+            chapterUrl,           // Original page URL
+            pageDomain,           // Just the domain
+            pageDomain + '/',     // Domain with trailing slash
+            BASE_URL,             // Base URL of the site
+            null                  // No referer as fallback
+        ];
+        let response = null;
+        let lastError = '';
+        
         try {
             // Ensure absolute URL
             let imgUrl = src;
@@ -541,27 +552,8 @@ async function crawlChapter(mangaId, chapterId) {
         const absoluteUrl = ensureAbsolute(chapter.url);
         let images = [];
         
-        // Try FlareSolverr first
-        if (flareSolverrAvailable) {
-            images = await downloadChapterViaFlaresolverr(mangaId, chapterId, absoluteUrl);
-            if (images.length > 0) {
-                // Save to DB
-                await ChapterDetail.findOneAndUpdate(
-                    { manga_id: mangaId, chapter_id: chapterId },
-                    { 
-                        images: images, 
-                        updated_at: new Date(),
-                        $setOnInsert: { created_at: new Date() }
-                    },
-                    { upsert: true }
-                );
-                console.log(`☁️ Saved ${images.length} URLs to MongoDB (via FlareSolverr)`);
-                process.exit(0);
-            }
-            console.log('⚠️ FlareSolverr failed, trying Playwright...');
-        }
-        
-        // Fallback to Playwright
+        // Use Playwright directly (skip FlareSolverr for now)
+        console.log('🎭 Using Playwright directly...');
         images = await downloadChapterViaPlaywright(mangaId, chapterId, absoluteUrl);
         
         if (images.length > 0) {
