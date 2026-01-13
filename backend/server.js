@@ -11,6 +11,15 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// Health check endpoint for Render
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'MangaVerse API is running' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // Routes (defined before connection so they're ready when server starts)
 
 // 1. Get All Mangas (with pagination and search)
@@ -134,9 +143,9 @@ app.get('/api/mangas/:mangaId/:chapterId', async (req, res) => {
     });
     console.log('✅ MongoDB connected');
     
-    // THEN start server
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+    // THEN start server - MUST bind to 0.0.0.0 for Render
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
     });
   } catch (err) {
     console.error('❌ MongoDB connection error:', err);
