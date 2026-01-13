@@ -18,7 +18,7 @@ const { chromium } = require('playwright');
 
 // Configuration
 const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'https://vuthanhdat2k3-flaresolverr.hf.space/v1';
-const BASE_URL = "https://nettruyen.me.uk";
+const BASE_URL = "https://halcyonhomecare.co.uk";
 const USER_DATA_DIR = "./browser_profile";
 
 // Initialize ImageKit
@@ -134,6 +134,7 @@ async function solveWithFlaresolverr(url) {
  */
 async function solveWithPlaywright(url) {
     console.log('🎭 Using Playwright...');
+    console.log('🔗 URL:', url);
     let browser = null;
     
     try {
@@ -179,20 +180,55 @@ async function solveWithPlaywright(url) {
         
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
-        // Check for Cloudflare
-        const title = await page.title();
-        if (title.includes('Just a moment') || title.includes('Cloudflare')) {
-            console.log('  🛡️ Detected Cloudflare, waiting...');
-            await page.waitForTimeout(8000);
+        // Check for Cloudflare and wait for it to resolve
+        let cloudflareAttempts = 0;
+        const maxCloudflareWait = 6; // Max 30 seconds (6 x 5s)
+        
+        while (cloudflareAttempts < maxCloudflareWait) {
+            const title = await page.title();
+            const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 500) || '');
+            
+            if (title.includes('Just a moment') || title.includes('Cloudflare') || 
+                bodyText.includes('Checking your browser') || bodyText.includes('Please wait')) {
+                cloudflareAttempts++;
+                console.log(`  🛡️ Cloudflare challenge detected (attempt ${cloudflareAttempts}/${maxCloudflareWait}), waiting 5s...`);
+                await page.waitForTimeout(5000);
+            } else {
+                if (cloudflareAttempts > 0) {
+                    console.log('  ✅ Cloudflare challenge passed!');
+                }
+                break;
+            }
         }
         
-        // Scroll to trigger lazy loading
-        console.log('📜 Triggering lazy loading...');
-        for (let i = 0; i < 10; i++) {
-            await page.mouse.wheel(0, 1000);
-            await page.waitForTimeout(800);
+        if (cloudflareAttempts >= maxCloudflareWait) {
+            console.log('  ⚠️ Cloudflare did not resolve after 30s, continuing anyway...');
         }
-        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
+        
+        // Wait for network to be idle
+        try {
+            await page.waitForLoadState('networkidle', { timeout: 10000 });
+        } catch (e) {
+            console.log('  ⏳ Network not fully idle, continuing...');
+        }
+        
+        // Scroll to trigger lazy loading - more thorough
+        console.log('📜 Triggering lazy loading...');
+        
+        // Simple scroll approach - scroll multiple times
+        for (let i = 0; i < 15; i++) {
+            await page.evaluate(`window.scrollBy(0, 800)`);
+            await page.waitForTimeout(500);
+        }
+        
+        // Scroll to bottom
+        await page.evaluate(`window.scrollTo(0, document.body.scrollHeight)`);
+        await page.waitForTimeout(2000);
+        
+        // Scroll back up and down again
+        await page.evaluate(`window.scrollTo(0, 0)`);
+        await page.waitForTimeout(500);
+        await page.evaluate(`window.scrollTo(0, document.body.scrollHeight)`);
         await page.waitForTimeout(2000);
         
         const html = await page.content();
@@ -201,6 +237,7 @@ async function solveWithPlaywright(url) {
     } catch (error) {
         if (browser) await browser.close();
         console.error('❌ Playwright error:', error.message);
+        console.error('Stack:', error.stack);
         return null;
     }
 }
@@ -418,18 +455,106 @@ async function downloadChapterViaPlaywright(mangaId, chapterId, chapterUrl) {
     }
     
     const { html, page, browser } = result;
-    const $ = cheerio.load(html);
     
-    // Find all images
-    const imgElements = [];
-    $('.reading-detail img, .page-chapter img, .reading img').each((i, el) => {
-        const src = $(el).attr('data-original') || $(el).attr('data-src') || $(el).attr('src');
-        if (src) imgElements.push(src);
-    });
+    // Try to find images using multiple strategies
+    let imgElements = [];
+    
+    // Strategy 1: Use Playwright to get images directly from the live page
+    try {
+        imgElements = await page.evaluate(() => {
+            const images = [];
+            
+            // Multiple selectors to try
+            const selectors = [
+                '.reading-detail img',
+                '.page-chapter img', 
+                '.reading img',
+                '#content img',
+                '.chapter-content img',
+                '.box-chap img',
+                '.chapter-detail img',
+                '.content-images img',
+                'article img',
+                '.main-content img'
+            ];
+            
+            for (const selector of selectors) {
+                document.querySelectorAll(selector).forEach(img => {
+                    const src = img.getAttribute('data-original') || 
+                               img.getAttribute('data-src') || 
+                               img.getAttribute('data-lazy-src') ||
+                               img.getAttribute('src');
+                    if (src && !images.includes(src) && !src.includes('logo') && !src.includes('avatar')) {
+                        images.push(src);
+                    }
+                });
+            }
+            
+            // If still nothing, try all images with specific patterns
+            if (images.length === 0) {
+                document.querySelectorAll('img').forEach(img => {
+                    const src = img.getAttribute('data-original') || 
+                               img.getAttribute('data-src') || 
+                               img.getAttribute('src');
+                    // Look for CDN patterns common in manga sites
+                    if (src && (src.includes('cdn') || src.includes('img') || src.includes('chapter') || src.includes('truyen'))) {
+                        if (!images.includes(src)) {
+                            images.push(src);
+                        }
+                    }
+                });
+            }
+            
+            return images;
+        });
+        
+        console.log(`🔍 Found ${imgElements.length} images via Playwright evaluate`);
+    } catch (e) {
+        console.log(`⚠️ Playwright evaluate failed: ${e.message}`);
+    }
+    
+    // Strategy 2: Fallback to Cheerio parsing if Playwright evaluate failed
+    if (imgElements.length === 0) {
+        console.log('🔄 Trying Cheerio fallback...');
+        const $ = cheerio.load(html);
+        
+        const selectors = [
+            '.reading-detail img',
+            '.page-chapter img', 
+            '.reading img',
+            '#content img',
+            '.chapter-content img',
+            '.box-chap img'
+        ];
+        
+        for (const selector of selectors) {
+            $(selector).each((i, el) => {
+                const src = $(el).attr('data-original') || $(el).attr('data-src') || $(el).attr('src');
+                if (src && !imgElements.includes(src)) {
+                    imgElements.push(src);
+                }
+            });
+            if (imgElements.length > 0) break;
+        }
+    }
     
     if (imgElements.length === 0) {
+        // Debug: Save screenshot to understand what's happening
+        console.log('⚠️ No images found. Taking debug screenshot...');
+        try {
+            const title = await page.title();
+            console.log(`📄 Page title: "${title}"`);
+            
+            // Check if still on Cloudflare
+            if (title.includes('Just a moment') || title.includes('Cloudflare')) {
+                console.log('🛡️ Still blocked by Cloudflare');
+            }
+            
+            // Log page URL
+            console.log(`📍 Current URL: ${page.url()}`);
+        } catch (e) {}
+        
         await browser.close();
-        console.log('⚠️ No images found');
         return [];
     }
     
@@ -544,6 +669,12 @@ async function crawlChapter(mangaId, chapterId) {
         
         const ensureAbsolute = (url) => {
             if (!url) return url;
+            // Replace old domains with new domain
+            url = url.replace('nettruyen.me.uk', 'halcyonhomecare.co.uk');
+            url = url.replace('nettruyen.net.vn', 'halcyonhomecare.co.uk');
+            url = url.replace('nettruyen.com', 'halcyonhomecare.co.uk');
+            // Convert chuong-XXX to chapter-XXX format
+            url = url.replace(/\/chuong-(\d+)/, '/chapter-$1');
             if (url.startsWith('http')) return url;
             if (url.startsWith('//')) return 'https:' + url;
             return BASE_URL + (url.startsWith('/') ? '' : '/') + url;

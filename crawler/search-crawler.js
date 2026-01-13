@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
 
 // Configuration
 const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'https://vuthanhdat2k3-flaresolverr.hf.space/v1';
-const BASE_URL = "https://nettruyen.me.uk";
+const BASE_URL = "https://halcyonhomecare.co.uk";
 const USER_DATA_DIR = "./browser_profile";
 
 // Initialize ImageKit

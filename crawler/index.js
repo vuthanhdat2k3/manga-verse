@@ -9,8 +9,8 @@ const { chromium } = require('playwright');
 
 // Configuration
 const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'https://vuthanhdat2k3-flaresolverr.hf.space/v1';
-const BASE_URL = "https://nettruyen.me.uk";
-const HOME_URL = "https://nettruyen.me.uk/trang-chu";
+const BASE_URL = "https://halcyonhomecare.co.uk";
+const HOME_URL = "https://halcyonhomecare.co.uk/trang-chu";
 const USER_DATA_DIR = "./browser_profile";
 
 console.log(`🚀 FlareSolverr URL: ${FLARESOLVERR_URL}`);
