@@ -298,7 +298,15 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
     
     console.log(`☁️ Found ${imgElements.length} images. Downloading...`);
     
-    const folderPath = `/manga_verse/${mangaId}/${chapterId}`;
+    // Use 'chuong-' prefix for folder name as per user requirement
+    let folderName = chapterId;
+    if (folderName.startsWith('chapter-')) {
+        folderName = folderName.replace('chapter-', 'chuong-');
+    } else if (!folderName.startsWith('chuong-')) {
+        folderName = `chuong-${folderName}`;
+    }
+    
+    const folderPath = `/manga_verse/${mangaId}/${folderName}`;
     
     // Get the page domain for Referer
     const pageDomain = new URL(chapterUrl).origin;
@@ -590,7 +598,15 @@ async function downloadChapterViaPlaywright(mangaId, chapterId, chapterUrl) {
     if (Object.keys(downloaded).length > 0) {
         console.log(`☁️ Uploading ${Object.keys(downloaded).length} images...`);
         
-        const folderPath = `/manga_verse/${mangaId}/${chapterId}`;
+        // Use 'chuong-' prefix for folder name as per user requirement
+        let folderName = chapterId;
+        if (folderName.startsWith('chapter-')) {
+            folderName = folderName.replace('chapter-', 'chuong-');
+        } else if (!folderName.startsWith('chuong-')) {
+            folderName = `chuong-${folderName}`;
+        }
+        
+        const folderPath = `/manga_verse/${mangaId}/${folderName}`;
         
         async function uploadOne(idx, imageBuffer) {
             try {
@@ -673,8 +689,18 @@ async function crawlChapter(mangaId, chapterId) {
             url = url.replace('nettruyen.me.uk', 'halcyonhomecare.co.uk');
             url = url.replace('nettruyen.net.vn', 'halcyonhomecare.co.uk');
             url = url.replace('nettruyen.com', 'halcyonhomecare.co.uk');
-            // Convert chuong-XXX to chapter-XXX format
-            url = url.replace(/\/chuong-(\d+)/, '/chapter-$1');
+            
+            // Fix duplicate chapter prefix if exists
+            url = url.replace(/\/chapter-chapter-(\d+)/, '/chapter-$1'); // Fix for absolute/relative
+
+            // Fix for halcyonhomecare: ensure 'chapter-' prefix exists before number
+            if (url.includes('halcyonhomecare.co.uk')) {
+                 // If ends with /number, add chapter- prefix
+                 if (url.match(/\/\d+$/)) {
+                     url = url.replace(/\/(\d+)$/, '/chapter-$1');
+                 }
+            }
+
             if (url.startsWith('http')) return url;
             if (url.startsWith('//')) return 'https:' + url;
             return BASE_URL + (url.startsWith('/') ? '' : '/') + url;

@@ -15,12 +15,19 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+const adminRoutes = require('./routes/adminRoutes');
+
+// ... (previous imports)
+
 // Health check endpoint for Render
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'MangaVerse API is running' });
 });
 
+app.use('/api/admin', adminRoutes);
+
 app.get('/health', (req, res) => {
+
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
@@ -272,7 +279,24 @@ app.get('/api/mangas/:id', async (req, res) => {
     }
 
     if (!manga) return res.status(404).json({ error: 'Manga not found' });
-    res.json(manga);
+
+    // Check which chapters are actually downloaded (exist in ChapterDetail)
+    const downloadedDocs = await ChapterDetail.find(
+      { manga_id: manga.id }, 
+      { chapter_id: 1, _id: 0 }
+    );
+    const downloadedSet = new Set(downloadedDocs.map(d => d.chapter_id));
+
+    // Convert to object and inject status
+    const result = manga.toObject();
+    if (result.chapters) {
+       result.chapters = result.chapters.map(c => ({
+          ...c,
+          downloaded: downloadedSet.has(c.id)
+       }));
+    }
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

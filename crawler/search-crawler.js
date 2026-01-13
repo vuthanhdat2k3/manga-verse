@@ -410,7 +410,7 @@ async function crawlFromUrl(url) {
                 const chapId = `chapter-${i}`;
                 const chapUrl = chapterUrlPattern
                     .replace('{slug}', mangaId)
-                    .replace('{chapter}', chapId);
+                    .replace('{chapter}', i);
 
                 chapters.push({
                     title: `Chapter ${i}`,
