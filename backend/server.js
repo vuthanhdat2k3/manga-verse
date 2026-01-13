@@ -5,6 +5,9 @@ const cors = require('cors');
 const Manga = require('./models/Manga');
 const ChapterDetail = require('./models/ChapterDetail');
 
+// Import search crawler for search and crawl routes
+const searchCrawler = require('../crawler/search-crawler');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -18,6 +21,166 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ===========================================
+// SEARCH & CRAWL ROUTES
+// ===========================================
+
+// Search manga on NetTruyen
+app.get('/api/search', async (req, res) => {
+  try {
+    const { keyword } = req.query;
+    
+    if (!keyword) {
+      return res.status(400).json({ error: 'Keyword is required' });
+    }
+    
+    console.log(`🔍 Search request: "${keyword}"`);
+    const results = await searchCrawler.searchManga(keyword);
+    
+    res.json({
+      success: true,
+      keyword: keyword,
+      count: results.length,
+      results: results
+    });
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Crawl manga from URL
+app.post('/api/crawl', async (req, res) => {
+  try {
+    const { url } = req.body;
+    
+    if (!url) {
+      return res.status(400).json({ error: 'URL or manga ID is required' });
+    }
+    
+    console.log(`📖 Crawl request: "${url}"`);
+    const manga = await searchCrawler.crawlFromUrl(url);
+    
+    res.json({
+      success: true,
+      manga: manga
+    });
+  } catch (error) {
+    console.error('Crawl error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Crawl multiple chapters in a range
+app.post('/api/crawl-chapter-range', async (req, res) => {
+  const { spawn } = require('child_process');
+  const path = require('path');
+  
+  try {
+    const { mangaId, startChapterId, endChapterId } = req.body;
+    
+    if (!mangaId || !startChapterId || !endChapterId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'mangaId, startChapterId, and endChapterId are required' 
+      });
+    }
+    
+    console.log(`📚 Batch crawl request: ${mangaId} from ${startChapterId} to ${endChapterId}`);
+    
+    // Get manga info to find chapters
+    const manga = await Manga.findOne({ id: mangaId });
+    if (!manga) {
+      return res.status(404).json({ success: false, error: 'Manga not found' });
+    }
+    
+    // Find chapter indices
+    const chapters = manga.chapters || [];
+    const startIdx = chapters.findIndex(ch => ch.id === startChapterId);
+    const endIdx = chapters.findIndex(ch => ch.id === endChapterId);
+    
+    if (startIdx === -1 || endIdx === -1) {
+      return res.status(400).json({ success: false, error: 'Invalid chapter selection' });
+    }
+    
+    // Get chapters to crawl (from startIdx to endIdx inclusive)
+    // Note: chapters array is [newest, ..., oldest], so startIdx < endIdx means start is newer
+    const minIdx = Math.min(startIdx, endIdx);
+    const maxIdx = Math.max(startIdx, endIdx);
+    const chaptersToCrawl = chapters.slice(minIdx, maxIdx + 1);
+    
+    console.log(`📚 Will crawl ${chaptersToCrawl.length} chapters`);
+    
+    // Crawl chapters sequentially (to avoid overloading)
+    let crawledCount = 0;
+    const scriptPath = path.resolve(__dirname, '../crawler/crawl-chapter.js');
+    
+    for (const chapter of chaptersToCrawl) {
+      // Check if already crawled
+      const existing = await ChapterDetail.findOne({ 
+        manga_id: mangaId, 
+        chapter_id: chapter.id 
+      });
+      
+      if (existing && existing.images && existing.images.length > 0) {
+        console.log(`⏭️ Skipping ${chapter.id} (already crawled)`);
+        crawledCount++; // Count as success since it exists
+        continue;
+      }
+      
+      // Crawl chapter
+      console.log(`🚀 Crawling ${chapter.id}...`);
+      
+      try {
+        await new Promise((resolve, reject) => {
+          const crawler = spawn('node', [scriptPath, mangaId, chapter.id], { 
+            stdio: 'inherit',
+            timeout: 120000 // 2 minute timeout per chapter
+          });
+          
+          crawler.on('close', (code) => {
+            if (code === 0) {
+              crawledCount++;
+              resolve();
+            } else {
+              console.error(`❌ Crawler failed for ${chapter.id} with code ${code}`);
+              resolve(); // Continue to next chapter even if one fails
+            }
+          });
+          
+          crawler.on('error', (err) => {
+            console.error(`❌ Crawler error for ${chapter.id}:`, err.message);
+            resolve(); // Continue to next chapter even if one fails
+          });
+        });
+      } catch (crawlError) {
+        console.error(`❌ Error crawling ${chapter.id}:`, crawlError.message);
+        // Continue to next chapter
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Crawled ${crawledCount}/${chaptersToCrawl.length} chapters`,
+      crawledCount: crawledCount,
+      totalRequested: chaptersToCrawl.length
+    });
+    
+  } catch (error) {
+    console.error('Batch crawl error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
 });
 
 // Routes (defined before connection so they're ready when server starts)
@@ -56,7 +219,20 @@ app.get('/api/mangas', async (req, res) => {
 // 2. Get Manga Detail
 app.get('/api/mangas/:id', async (req, res) => {
   try {
-    const manga = await Manga.findOne({ id: req.params.id });
+    let manga = await Manga.findOne({ id: req.params.id });
+    
+    // Lazy Crawl: If not in DB, try to crawl it immediately
+    if (!manga) {
+       console.log(`⚠️ Manga ${req.params.id} not in DB. Attempting lazy crawl...`);
+       try {
+           // Use searchCrawler to fetch data directly
+           // Note: This expects the ID to be a valid slug or URL part
+           manga = await searchCrawler.crawlFromUrl(req.params.id);
+       } catch(e) {
+           console.error(`❌ Lazy crawl failed for ${req.params.id}:`, e.message);
+       }
+    }
+
     if (!manga) return res.status(404).json({ error: 'Manga not found' });
     res.json(manga);
   } catch (error) {

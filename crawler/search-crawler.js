@@ -172,6 +172,15 @@ const ensureAbsolute = (url) => {
     return BASE_URL + (url.startsWith('/') ? '' : '/') + url;
 };
 
+function slugify(text) {
+    return text.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[đĐ]/g, 'd')
+        .replace(/[^a-z0-9\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-');
+}
+
 /**
  * Search for manga on NetTruyen
  * @param {string} keyword - Search keyword
@@ -182,15 +191,67 @@ async function searchManga(keyword) {
     await checkFlareSolverr();
     
     console.log(`🔍 Searching for: "${keyword}"`);
+    const results = [];
+    const slug = slugify(keyword);
     
+    // Strategy 1: Direct URL access (for exact matches)
+    // User tip: "để tìm được truyện thì url phải là .../truyen-tranh/slug"
+    console.log(`🔍 Strategy 1: Checking direct URL for slug "${slug}"...`);
     try {
-        // NetTruyen search URL
-        const searchUrl = `${BASE_URL}/tim-truyen?keyword=${encodeURIComponent(keyword)}`;
-        const html = await solve(searchUrl);
-        const $ = cheerio.load(html);
+        const directUrl = `${BASE_URL}/truyen-tranh/${slug}`;
+        const html = await solve(directUrl);
+        
+        if (html) {
+            const $ = cheerio.load(html);
+            // Check if valid detail page
+            const titleEl = $('h1.title-detail');
+            if (titleEl.length > 0) {
+                console.log(`✅ Found exact match via direct URL!`);
+                const thumbEl = $('.col-image img');
+                let thumbnail = thumbEl.attr('data-original') || thumbEl.attr('data-src') || thumbEl.attr('src');
+                const latestChapter = $('#nt_listchapter .chapter a').first().text().trim() || 'N/A';
+                
+                results.push({
+                    id: slug,
+                    title: titleEl.text().trim(),
+                    url: ensureAbsolute(directUrl),
+                    thumbnail: ensureAbsolute(thumbnail),
+                    latest_chapter: latestChapter
+                });
+                
+                // If we found the exact manga, we might just return it. 
+                // But let's also search to get more results if possible, unless the user specifically wants this behavior.
+                // For now, let's prioritize this result.
+                return results;
+            }
+        }
+    } catch (e) {
+        console.log(`⚠️ Direct slug check failed/skipped: ${e.message}`);
+    }
 
-        const results = [];
-        $('.item').each((i, el) => {
+    // Strategy 2: Regular Search
+    console.log(`🔍 Strategy 2: Standard search...`);
+    try {
+        // Try searching with original keyword first
+        let searchUrl = `${BASE_URL}/tim-truyen?keyword=${encodeURIComponent(keyword)}`;
+        console.log(`🔗 Fetching: ${searchUrl}`);
+        
+        let html = await solve(searchUrl);
+        let $ = cheerio.load(html || '');
+        let items = $('.item');
+        
+        // If no results, try searching with slug
+        if (items.length === 0 && slug !== keyword) {
+            console.log(`⚠️ No results for "${keyword}". Retrying with slug "${slug}"...`);
+            searchUrl = `${BASE_URL}/tim-truyen?keyword=${encodeURIComponent(slug)}`;
+            html = await solve(searchUrl);
+            $ = cheerio.load(html || '');
+            items = $('.item');
+        }
+
+        console.log(`🔍 Found ${items.length} items with selector ".item"`);
+        
+        items.each((i, el) => {
             const titleEl = $(el).find('h3 a');
             const imgEl = $(el).find('img');
             const latestChapterEl = $(el).find('.chapter a').first();
@@ -199,20 +260,25 @@ async function searchManga(keyword) {
                 const absUrl = ensureAbsolute(titleEl.attr('href'));
                 const thumbnail = imgEl.attr('data-original') || imgEl.attr('data-src') || imgEl.attr('src');
                 
-                results.push({
-                    id: absUrl.split('/').pop(),
-                    title: titleEl.text().trim(),
-                    url: absUrl,
-                    thumbnail: ensureAbsolute(thumbnail),
-                    latest_chapter: latestChapterEl.text().trim() || 'N/A'
-                });
+                // Avoid duplicates if Strategy 1 found it
+                if (!results.some(r => r.url === absUrl)) {
+                    results.push({
+                        id: absUrl.split('/').pop(),
+                        title: titleEl.text().trim(),
+                        url: absUrl,
+                        thumbnail: ensureAbsolute(thumbnail),
+                        latest_chapter: latestChapterEl.text().trim() || 'N/A'
+                    });
+                }
             }
         });
 
-        console.log(`✅ Found ${results.length} results`);
+        console.log(`✅ Total results: ${results.length}`);
         return results;
     } catch (error) {
         console.error('Search error:', error.message);
+        // If we found something in strategy 1, return it at least
+        if (results.length > 0) return results;
         throw error;
     }
 }
