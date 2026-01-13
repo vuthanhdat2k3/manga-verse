@@ -690,6 +690,9 @@ async function crawlChapter(mangaId, chapterId) {
             url = url.replace('nettruyen.net.vn', 'halcyonhomecare.co.uk');
             url = url.replace('nettruyen.com', 'halcyonhomecare.co.uk');
             
+            // Convert chuong-XXX to chapter-XXX format if present
+            url = url.replace(/\/chuong-(\d+)/, '/chapter-$1');
+
             // Fix duplicate chapter prefix if exists
             url = url.replace(/\/chapter-chapter-(\d+)/, '/chapter-$1'); // Fix for absolute/relative
 
