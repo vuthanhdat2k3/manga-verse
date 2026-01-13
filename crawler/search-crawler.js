@@ -8,7 +8,8 @@ const { chromium } = require('playwright');
 
 // Configuration
 const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'https://vuthanhdat2k3-flaresolverr.hf.space/v1';
-const BASE_URL = "https://halcyonhomecare.co.uk";
+const Config = require('../backend/models/Config');
+// BASE_URL is now dynamic
 const USER_DATA_DIR = "./browser_profile";
 
 // Initialize ImageKit
@@ -28,6 +29,29 @@ async function connectDB() {
         console.log("✅ DB Connected");
     }
 }
+
+async function getConfig() {
+    try {
+        await connectDB();
+        let config = await Config.findOne({ key: 'default' });
+        if (!config) {
+             return {
+                 baseUrl: 'https://halcyonhomecare.co.uk',
+                 mangaDetailUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}',
+                 chapterUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}/chapter-{chapter}'
+             };
+        }
+        return config;
+    } catch (e) {
+        console.error('Failed to load config:', e);
+         return {
+             baseUrl: 'https://halcyonhomecare.co.uk',
+             mangaDetailUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}',
+             chapterUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}/chapter-{chapter}'
+         };
+    }
+}
+
 
 async function checkFlareSolverr() {
     try {
@@ -121,7 +145,7 @@ async function solve(url) {
     throw new Error('All bypass methods failed');
 }
 
-async function uploadImageViaRequests(url, fileName) {
+async function uploadImageViaRequests(url, fileName, baseUrl) {
     if (!process.env.IMAGEKIT_PRIVATE_KEY) return url;
     if (!url || url.includes('loader') || url.includes('error')) return url;
     
@@ -131,7 +155,7 @@ async function uploadImageViaRequests(url, fileName) {
     try {
         const headers = {
             'User-Agent': flareSolverrUserAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': BASE_URL,
+            'Referer': baseUrl,
             'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
         };
         
@@ -165,11 +189,11 @@ async function uploadImageViaRequests(url, fileName) {
     }
 }
 
-const ensureAbsolute = (url) => {
+const ensureAbsolute = (url, baseUrl) => {
     if (!url) return url;
     if (url.startsWith('http')) return url;
     if (url.startsWith('//')) return 'https:' + url;
-    return BASE_URL + (url.startsWith('/') ? '' : '/') + url;
+    return baseUrl + (url.startsWith('/') ? '' : '/') + url;
 };
 
 function slugify(text) {
@@ -189,39 +213,42 @@ function slugify(text) {
 async function searchManga(keyword) {
     await connectDB();
     await checkFlareSolverr();
+    const { baseUrl, mangaDetailUrlPattern } = await getConfig();
     
-    console.log(`🔍 Searching for: "${keyword}"`);
+    console.log(`🔍 Searching for: "${keyword}" (Base: ${baseUrl})`);
     const results = [];
     const slug = slugify(keyword);
     
-    // Strategy 1: Direct URL access (for exact matches)
-    // User tip: "để tìm được truyện thì url phải là .../truyen-tranh/slug"
+    // Strategy 1: Direct URL access
     console.log(`🔍 Strategy 1: Checking direct URL for slug "${slug}"...`);
     try {
-        const directUrl = `${BASE_URL}/truyen-tranh/${slug}`;
+        // Use configured pattern
+        const directUrl = mangaDetailUrlPattern.replace('{slug}', slug);
         const html = await solve(directUrl);
         
         if (html) {
             const $ = cheerio.load(html);
-            // Check if valid detail page
             const titleEl = $('h1.title-detail');
             if (titleEl.length > 0) {
                 console.log(`✅ Found exact match via direct URL!`);
                 const thumbEl = $('.col-image img');
                 let thumbnail = thumbEl.attr('data-original') || thumbEl.attr('data-src') || thumbEl.attr('src');
-                const latestChapter = $('#nt_listchapter .chapter a').first().text().trim() || 'N/A';
+                
+                // Get latest chapter logic
+                let latestChapter = $('#nt_listchapter .chapter a').first().text().trim();
+                // Fallback
+                if (!latestChapter) {
+                    latestChapter = $('.list-chapters a').first().text().trim();
+                }
+                latestChapter = latestChapter || 'N/A';
                 
                 results.push({
                     id: slug,
                     title: titleEl.text().trim(),
-                    url: ensureAbsolute(directUrl),
-                    thumbnail: ensureAbsolute(thumbnail),
+                    url: ensureAbsolute(directUrl, baseUrl),
+                    thumbnail: ensureAbsolute(thumbnail, baseUrl),
                     latest_chapter: latestChapter
                 });
-                
-                // If we found the exact manga, we might just return it. 
-                // But let's also search to get more results if possible, unless the user specifically wants this behavior.
-                // For now, let's prioritize this result.
                 return results;
             }
         }
@@ -232,24 +259,23 @@ async function searchManga(keyword) {
     // Strategy 2: Regular Search
     console.log(`🔍 Strategy 2: Standard search...`);
     try {
-        // Try searching with original keyword first
-        let searchUrl = `${BASE_URL}/tim-truyen?keyword=${encodeURIComponent(keyword)}`;
+        // Assume search path is standard /tim-truyen
+        let searchUrl = `${baseUrl}/tim-truyen?keyword=${encodeURIComponent(keyword)}`;
         console.log(`🔗 Fetching: ${searchUrl}`);
         
         let html = await solve(searchUrl);
         let $ = cheerio.load(html || '');
         let items = $('.item');
         
-        // If no results, try searching with slug
         if (items.length === 0 && slug !== keyword) {
             console.log(`⚠️ No results for "${keyword}". Retrying with slug "${slug}"...`);
-            searchUrl = `${BASE_URL}/tim-truyen?keyword=${encodeURIComponent(slug)}`;
+            searchUrl = `${baseUrl}/tim-truyen?keyword=${encodeURIComponent(slug)}`;
             html = await solve(searchUrl);
             $ = cheerio.load(html || '');
             items = $('.item');
         }
 
-        console.log(`🔍 Found ${items.length} items with selector ".item"`);
+        console.log(`🔍 Found ${items.length} items`);
         
         items.each((i, el) => {
             const titleEl = $(el).find('h3 a');
@@ -257,16 +283,15 @@ async function searchManga(keyword) {
             const latestChapterEl = $(el).find('.chapter a').first();
             
             if (titleEl.length) {
-                const absUrl = ensureAbsolute(titleEl.attr('href'));
+                const absUrl = ensureAbsolute(titleEl.attr('href'), baseUrl);
                 const thumbnail = imgEl.attr('data-original') || imgEl.attr('data-src') || imgEl.attr('src');
                 
-                // Avoid duplicates if Strategy 1 found it
                 if (!results.some(r => r.url === absUrl)) {
                     results.push({
                         id: absUrl.split('/').pop(),
                         title: titleEl.text().trim(),
                         url: absUrl,
-                        thumbnail: ensureAbsolute(thumbnail),
+                        thumbnail: ensureAbsolute(thumbnail, baseUrl),
                         latest_chapter: latestChapterEl.text().trim() || 'N/A'
                     });
                 }
@@ -277,7 +302,6 @@ async function searchManga(keyword) {
         return results;
     } catch (error) {
         console.error('Search error:', error.message);
-        // If we found something in strategy 1, return it at least
         if (results.length > 0) return results;
         throw error;
     }
@@ -291,18 +315,19 @@ async function searchManga(keyword) {
 async function crawlFromUrl(url) {
     await connectDB();
     await checkFlareSolverr();
+    const { baseUrl, mangaDetailUrlPattern, chapterUrlPattern } = await getConfig();
     
     // Extract manga ID from URL
     let mangaId = url;
-    if (url.includes('nettruyen') || url.includes('/')) {
+    if (url.includes('/') && url.includes('http')) {
         const parts = url.split('/');
         mangaId = parts[parts.length - 1] || parts[parts.length - 2];
     }
     
-    console.log(`📖 Crawling manga: ${mangaId}`);
+    console.log(`📖 Crawling manga: ${mangaId} (Base: ${baseUrl})`);
     
     try {
-        const mangaUrl = url.startsWith('http') ? url : `${BASE_URL}/truyen-tranh/${mangaId}`;
+        const mangaUrl = url.startsWith('http') ? url : mangaDetailUrlPattern.replace('{slug}', mangaId);
         const html = await solve(mangaUrl);
         const $ = cheerio.load(html);
 
@@ -318,18 +343,26 @@ async function crawlFromUrl(url) {
         // Get thumbnail
         const thumbEl = $('.col-image img');
         let thumbnail = thumbEl.attr('data-original') || thumbEl.attr('data-src') || thumbEl.attr('src');
-        thumbnail = ensureAbsolute(thumbnail);
+        thumbnail = ensureAbsolute(thumbnail, baseUrl);
         
         // Upload cover
         console.log('☁️ Uploading cover...');
-        const uploadedCover = await uploadImageViaRequests(thumbnail, `${mangaId}.jpg`);
+        const uploadedCover = await uploadImageViaRequests(thumbnail, `${mangaId}.jpg`, baseUrl);
 
         console.log('📜 Analyzing chapters...');
 
         // Chapters Analysis
         const visibleChapters = [];
-        $('#nt_listchapter ul li.row:not(.heading) a').each((i, el) => {
-            const absUrl = ensureAbsolute($(el).attr('href'));
+        let chapterElements = $('#nt_listchapter ul li.row:not(.heading) a');
+        
+        // Fallback for new site structure
+        if (chapterElements.length === 0) {
+             // console.log('⚠️ #nt_listchapter not found, trying .list-chapters...');
+             chapterElements = $('.list-chapters a');
+        }
+
+        chapterElements.each((i, el) => {
+            const absUrl = ensureAbsolute($(el).attr('href'), baseUrl);
             const text = $(el).text().trim();
             if (absUrl && text) {
                 visibleChapters.push({
@@ -352,37 +385,43 @@ async function crawlFromUrl(url) {
                 if (!isNaN(num)) {
                     maxChapter = Math.max(maxChapter, num);
                     minChapter = Math.min(minChapter, num);
-
-                    if (!pattern) {
-                        const prefix = match[1].toLowerCase();
-                        const baseUrl = chap.url.replace(new RegExp(`[/-]${prefix}[/-]?\\d+.*$`, 'i'), '');
-                        pattern = {
-                            baseUrl,
-                            prefix,
-                            separator: chap.url.toLowerCase().includes(`${prefix}-`) ? '-' : ''
-                        };
-                    }
+                    // We just use min/max to seed the generator loop
                 }
             }
         }
-
-        let chapters = [];
         
-        if (pattern && maxChapter > 0) {
+        // Using configured pattern if we have maxChapter > 0
+        let chapters = [];
+        if (maxChapter > 0) {
+            console.log(`   📊 Pattern detected (or assumed): Chapter ${minChapter} → ${maxChapter}`);
             for (let i = maxChapter; i >= 0; i--) {
-                const chapId = `${pattern.prefix}${pattern.separator}${i}`;
-                const chapUrl = `${pattern.baseUrl}/${chapId}`;
+                // Generate URL using user Config
+                // Pattern ex: ${baseUrl}/truyen-tranh/{slug}/{chapter}
+                // or user pattern from DB
+                
+                // We need to decide what '{chapter}' maps to. 
+                // Usually it's "chapter-X" or "chap-X" or just "X".
+                // We'll try to guess the prefix from the first visible chapter or default to 'chapter-X'
+                
+                // Actually, let's respect the User's Pattern strictly?
+                // If the pattern is `.../{chapter}`, does `{chapter}` == `5` or `chapter-5`?
+                // The user ex: `.../chapter-0`. So likely the substitution is the whole ID.
+                
+                const chapId = `chapter-${i}`;
+                const chapUrl = chapterUrlPattern
+                    .replace('{slug}', mangaId)
+                    .replace('{chapter}', chapId);
+
                 chapters.push({
                     title: `Chapter ${i}`,
-                    url: ensureAbsolute(chapUrl),
+                    url: chapUrl, // Pattern is already absolute? config says so.
                     id: chapId
                 });
             }
-            console.log(`   📊 Pattern detected: Chapter ${minChapter} → ${maxChapter}`);
-            console.log(`   ✅ Generated ${chapters.length} chapters!`);
+             console.log(`   ✅ Generated ${chapters.length} chapters via Config Pattern!`);
         } else {
             chapters = visibleChapters;
-            console.log(`   ⚠️ No pattern. Saved ${chapters.length} visible chapters.`);
+            console.log(`   ⚠️ No pattern detected. Saved ${chapters.length} visible chapters.`);
         }
         
         const mangaData = {
@@ -397,6 +436,21 @@ async function crawlFromUrl(url) {
             chapters: chapters,
             total_chapters: chapters.length
         };
+
+        // VALIDATION: Prevent overwriting with bad data
+        if (!title) {
+            console.error('❌ Crawl Failure: Title not found in HTML. Likely blocked by WAF.');
+            throw new Error('Title not found (cloudflared?)');
+        }
+
+        if (chapters.length === 0) {
+            console.warn('⚠️ Warning: 0 chapters found. Checking if existing data should be preserved...');
+            const existing = await Manga.findOne({ id: mangaId });
+            if (existing && existing.chapters.length > 0) {
+                console.error(`❌ Aborting save: New crawl has 0 chapters, but DB has ${existing.chapters.length}. Keeping old data.`);
+                return existing;
+            }
+        }
         
         // Save to DB
         await Manga.findOneAndUpdate(

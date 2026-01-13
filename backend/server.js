@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const Manga = require('./models/Manga');
 const ChapterDetail = require('./models/ChapterDetail');
+const Config = require('./models/Config');
 
 // Import search crawler for search and crawl routes
 const searchCrawler = require('../crawler/search-crawler');
@@ -183,7 +184,44 @@ app.post('/api/crawl-chapter-range', async (req, res) => {
   }
 });
 
-// Routes (defined before connection so they're ready when server starts)
+// ===========================================
+// CONFIG ROUTES
+// ===========================================
+
+app.get('/api/config', async (req, res) => {
+  try {
+    let config = await Config.findOne({ key: 'default' });
+    if (!config) {
+      config = await Config.create({ key: 'default' });
+    }
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/config', async (req, res) => {
+  try {
+    const { baseUrl, mangaDetailUrlPattern, chapterUrlPattern } = req.body;
+    const config = await Config.findOneAndUpdate(
+      { key: 'default' },
+      { 
+        baseUrl, 
+        mangaDetailUrlPattern, 
+        chapterUrlPattern, 
+        updatedAt: Date.now() 
+      },
+      { new: true, upsert: true }
+    );
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===========================================
+// ROUTES
+// ===========================================
 
 // 1. Get All Mangas (with pagination and search)
 app.get('/api/mangas', async (req, res) => {
@@ -239,6 +277,29 @@ app.get('/api/mangas/:id', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
+// 2.5 Manual Update Chapters
+app.post('/api/mangas/:id/update-chapters', async (req, res) => {
+  try {
+    const mangaId = req.params.id;
+    console.log(`🔄 Manual update triggered for manga: ${mangaId}`);
+    
+    // Check if manga exists
+    let manga = await Manga.findOne({ id: mangaId });
+    if (!manga) return res.status(404).json({ error: 'Manga not found' });
+
+    // Trigger crawl
+    const updatedManga = await searchCrawler.crawlFromUrl(manga.url || mangaId);
+    
+    res.json(updatedManga);
+  } catch (error) {
+    console.error('Update chapters error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 
 // 3. Get Chapter Images (with Lazy Crawling)
 const { spawn } = require('child_process');
