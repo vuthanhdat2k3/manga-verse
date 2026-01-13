@@ -8,4 +8,7 @@ router.get('/', mangaController.getAllMangas);
 // GET /api/mangas/:id - Get manga detail
 router.get('/:id', mangaController.getMangaById);
 
+// POST /api/mangas/:id/update-chapters - Manual re-crawl
+router.post('/:id/update-chapters', mangaController.updateChapters);
+
 module.exports = router;

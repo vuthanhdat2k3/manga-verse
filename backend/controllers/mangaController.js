@@ -68,3 +68,21 @@ exports.getMangaById = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+/**
+ * Update manga chapters (Manual Re-crawl)
+ */
+exports.updateChapters = async (req, res) => {
+  try {
+    const mangaId = req.params.id;
+    console.log(`🔄 Manual update triggered for manga: ${mangaId}`);
+    
+    const searchCrawler = require('../../crawler/search-crawler');
+    const updatedManga = await searchCrawler.crawlFromUrl(mangaId);
+    
+    res.json(updatedManga);
+  } catch (error) {
+    console.error('Update chapters error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
