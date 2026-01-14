@@ -13,13 +13,47 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const Manga = require('../backend/models/Manga');
 const ChapterDetail = require('../backend/models/ChapterDetail');
+const Config = require('../backend/models/Config');
 const ImageKit = require('imagekit');
 const { chromium } = require('playwright');
 
 // Configuration
 const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'https://vuthanhdat2k3-flaresolverr.hf.space/v1';
-const BASE_URL = "https://halcyonhomecare.co.uk";
 const USER_DATA_DIR = "./browser_profile";
+
+// Cached config
+let cachedConfig = null;
+
+/**
+ * Get config from database or use defaults
+ */
+async function getConfig() {
+    if (cachedConfig) return cachedConfig;
+    
+    try {
+        let config = await Config.findOne({ key: 'default' });
+        if (!config) {
+            console.log('⚠️ No config found in DB, using defaults');
+            cachedConfig = {
+                baseUrl: 'https://nettruyen.one',
+                mangaDetailUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}',
+                chapterUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}/chapter-{chapter}'
+            };
+        } else {
+            cachedConfig = config;
+        }
+        console.log(`📋 Config loaded: baseUrl = ${cachedConfig.baseUrl}`);
+        return cachedConfig;
+    } catch (e) {
+        console.error('Failed to load config:', e.message);
+        cachedConfig = {
+            baseUrl: 'https://nettruyen.one',
+            mangaDetailUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}',
+            chapterUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}/chapter-{chapter}'
+        };
+        return cachedConfig;
+    }
+}
 
 // Initialize ImageKit
 const imagekit = new ImageKit({
@@ -311,6 +345,10 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
     // Get the page domain for Referer
     const pageDomain = new URL(chapterUrl).origin;
     
+    // Get base URL from config for referer fallback
+    const config = await getConfig();
+    const configBaseUrl = config.baseUrl;
+    
     // Simple headers that mimic a real browser image request
     // CDN anti-hotlink usually only checks Referer
     const baseHeaders = {
@@ -328,7 +366,7 @@ async function downloadChapterViaFlaresolverr(mangaId, chapterId, chapterUrl) {
             chapterUrl,           // Original page URL
             pageDomain,           // Just the domain
             pageDomain + '/',     // Domain with trailing slash
-            BASE_URL,             // Base URL of the site
+            configBaseUrl,        // Base URL from config
             null                  // No referer as fallback
         ];
         let response = null;
@@ -683,33 +721,46 @@ async function crawlChapter(mangaId, chapterId) {
 
         console.log(`🚀 Crawling ${mangaId} - ${chapter.title}...`);
         
+        // Get config from database
+        const config = await getConfig();
+        const baseUrl = config.baseUrl;
+        const baseUrlHost = new URL(baseUrl).host;
+        
         const ensureAbsolute = (url) => {
             if (!url) return url;
-            // Replace old domains with new domain
-            url = url.replace('nettruyen.me.uk', 'halcyonhomecare.co.uk');
-            url = url.replace('nettruyen.net.vn', 'halcyonhomecare.co.uk');
-            url = url.replace('nettruyen.com', 'halcyonhomecare.co.uk');
+            
+            // Extract host from current URL if it's absolute
+            let urlHost = '';
+            try {
+                if (url.startsWith('http')) {
+                    urlHost = new URL(url).host;
+                }
+            } catch (e) {}
+            
+            // If URL has a different domain than config, replace with config domain
+            // This handles domain changes dynamically from DB config
+            if (urlHost && urlHost !== baseUrlHost) {
+                url = url.replace(urlHost, baseUrlHost);
+            }
             
             // Convert chuong-XXX to chapter-XXX format if present
             url = url.replace(/\/chuong-(\d+)/, '/chapter-$1');
 
             // Fix duplicate chapter prefix if exists
-            url = url.replace(/\/chapter-chapter-(\d+)/, '/chapter-$1'); // Fix for absolute/relative
+            url = url.replace(/\/chapter-chapter-(\d+)/, '/chapter-$1');
 
-            // Fix for halcyonhomecare: ensure 'chapter-' prefix exists before number
-            if (url.includes('halcyonhomecare.co.uk')) {
-                 // If ends with /number, add chapter- prefix
-                 if (url.match(/\/\d+$/)) {
-                     url = url.replace(/\/(\d+)$/, '/chapter-$1');
-                 }
+            // If ends with /number, add chapter- prefix
+            if (url.match(/\/\d+$/)) {
+                url = url.replace(/\/(\d+)$/, '/chapter-$1');
             }
 
             if (url.startsWith('http')) return url;
             if (url.startsWith('//')) return 'https:' + url;
-            return BASE_URL + (url.startsWith('/') ? '' : '/') + url;
+            return baseUrl + (url.startsWith('/') ? '' : '/') + url;
         };
         
         const absoluteUrl = ensureAbsolute(chapter.url);
+        console.log(`🔗 Chapter URL: ${absoluteUrl}`);
         let images = [];
         
         // Use Playwright directly (skip FlareSolverr for now)

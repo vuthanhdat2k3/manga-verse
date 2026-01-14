@@ -35,19 +35,21 @@ async function getConfig() {
         await connectDB();
         let config = await Config.findOne({ key: 'default' });
         if (!config) {
+             console.log('⚠️ No config found in DB, using defaults');
              return {
-                 baseUrl: 'https://halcyonhomecare.co.uk',
-                 mangaDetailUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}',
-                 chapterUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}/chapter-{chapter}'
+                 baseUrl: 'https://nettruyen.one',
+                 mangaDetailUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}',
+                 chapterUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}/chapter-{chapter}'
              };
         }
+        console.log(`📋 Config loaded: baseUrl = ${config.baseUrl}`);
         return config;
     } catch (e) {
         console.error('Failed to load config:', e);
          return {
-             baseUrl: 'https://halcyonhomecare.co.uk',
-             mangaDetailUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}',
-             chapterUrlPattern: 'https://halcyonhomecare.co.uk/truyen-tranh/{slug}/chapter-{chapter}'
+             baseUrl: 'https://nettruyen.one',
+             mangaDetailUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}',
+             chapterUrlPattern: 'https://nettruyen.one/truyen-tranh/{slug}/chapter-{chapter}'
          };
     }
 }
